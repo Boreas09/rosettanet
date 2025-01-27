@@ -19,7 +19,20 @@ function isValidJsonRpcRequest(body: ParsedRequest): boolean {
 }
 
 const nonParamMethods = [
-  "eth_gasPrice"
+  "eth_gasPrice",
+  "eth_chainId",
+  "web3_clientVersion",
+  "net_version",
+  "net_listening",
+  "net_peerCount",
+  "eth_protocolVersion",
+  "eth_syncing",
+  "eth_coinbase",
+  "eth_mining",
+  "eth_hashrate",
+  "eth_accounts",
+  "eth_blockNumber",
+
 ]
 
 export function parseRequest(
@@ -27,6 +40,7 @@ export function parseRequest(
   res: Response,
   next: NextFunction,
 ) {
+  // Todo: If params not provided, pass empty array
   if (isValidJsonRpcRequest(req.body)) {
     const { jsonrpc, method, params, id } = req.body
     req.rpcRequest = { jsonrpc, method, params, id }
