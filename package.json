@@ -13,6 +13,7 @@
     "test:utils": "jest --watch tests/utils",
     "test:converters": "jest --watch tests/utils/converters",
     "test": "jest",
+    "test:e2e": "",
     "test:watch": "jest --watch",
     "start:file-logging": "npx nodemon --enable-logs --logging-type file --logging-file logs.md",
     "start:console-logging": "npx nodemon --enable-logs --logging-type console",
@@ -40,11 +41,14 @@
     "typescript": "^5.3.3"
   },
   "dependencies": {
+    "@types/cors": "^2.8.17",
     "axios": "^1.6.7",
     "bignumber.js": "^9.1.2",
+    "cors": "^2.8.5",
     "ethers": "^6.13.1",
     "express": "^4.18.2",
     "js-sha3": "^0.9.3",
-    "starknet": "^6.11.0"
+    "starknet": "^6.11.0",
+    "starknet-devnet": "^0.2.2"
   }
 }
