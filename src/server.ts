@@ -1,9 +1,11 @@
 import express, { Application } from 'express'
 import { parseRequest } from './utils/parser'
-import cors from 'cors';
+import cors from 'cors'
 
 import Routes from './rpc/calls'
 import { getConfigurationProperty } from './utils/configReader'
+import { writeLog } from './logger'
+import { readFile } from 'fs'
 
 export function StartListening() {
   const app: Application = express()
@@ -13,12 +15,23 @@ export function StartListening() {
   app.use(express.json())
   app.use(express.urlencoded({ extended: true }))
   app.use(parseRequest)
-  app.use(cors());
-  app.options("*", cors())
+  app.use(cors())
+  app.options('*', cors())
   app.use('/', Routes)
 
   app.listen(port, host, (): void => {
     // eslint-disable-next-line no-console
-    console.log(`Server started at ${host}:${port}`)
+    writeLog(0, `Server started at ${host}:${port}`)
+
+    app.get('/logs', (req, res) => {
+      const logging = getConfigurationProperty('logging')
+      readFile(logging.fileName, 'utf8', (err, data) => {
+        if (err) {
+          return res.status(500).send('Error reading log file')
+        }
+        res.setHeader('Content-Type', 'text/plain')
+        res.send(data)
+      })
+    })
   })
 }
