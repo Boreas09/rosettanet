@@ -9,7 +9,7 @@ import { writeLog } from './logger'
 export function StartListening() {
   const app: Application = express()
   const host = getConfigurationProperty('host')
-  const port = Number(getConfigurationProperty('port')) || 3000
+  const port = Number(process.env.PORT) || 3000
 
   app.use(cors())
   app.options('*', cors())
