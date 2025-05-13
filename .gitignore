@@ -13,15 +13,19 @@ Cargo.lock
 # MSVC Windows builds of rustc generate these, which store debugging information
 *.pdb
 build/
+dist/
 node_modules/
 package-lock.json
 
 contracts/scarb.lock
 contracts/target/
-.tool-versions
 contracts/.snfoundry_cache/.prev_tests_failed
 contracts/account
 contracts/keystore
 
 logs.md
 sniffs.log
+logs.log
+
+contracts/
+config.test.json

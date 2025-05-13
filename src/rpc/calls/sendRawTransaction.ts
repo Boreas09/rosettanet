@@ -1,19 +1,19 @@
-/* eslint-disable @typescript-eslint/no-unused-vars */
-
+import { Transaction } from 'ethers'
 import {
-  EVMDecodeError,
-  EVMDecodeResult,
-  PrepareCalldataError,
   RPCError,
   RPCRequest,
   RPCResponse,
   SignedRawTransaction,
-  StarknetContract,
-  StarknetContractReadError,
   StarknetRPCError,
   ValidationError,
 } from '../../types/types'
-import { Transaction } from 'ethers'
+import { validateRawTransaction } from '../../utils/validations'
+import {
+  isAccountDeployResult,
+  isPrepareCalldataError,
+  isSignedRawTransaction,
+  isStarknetRPCError,
+} from '../../types/typeGuards'
 import {
   AccountDeployError,
   AccountDeployResult,
@@ -22,34 +22,13 @@ import {
   RosettanetAccountResult,
 } from '../../utils/rosettanet'
 import { callStarknet } from '../../utils/callHelper'
-import { validateRawTransaction } from '../../utils/validations'
-import { getSnAddressFromEthAddress, precalculateStarknetAccountAddress } from '../../utils/wrapper'
-import {
-  CairoNamedConvertableType,
-  getContractAbiAndMethods,
-  getEthereumInputsCairoNamed,
-} from '../../utils/starknet'
-import {
-  ConvertableType,
-  initializeStarknetAbi,
-} from '../../utils/converters/abiFormatter'
-import {
-  findStarknetCallableMethod,
-  StarknetCallableMethod,
-} from '../../utils/match'
-import {
-  decodeEVMCalldata,
-  decodeMulticallCalldata,
-  decodeMulticallFeatureCalldata,
-  getFunctionSelectorFromCalldata,
-} from '../../utils/calldata'
 import {
   prepareRosettanetCalldata,
   prepareStarknetInvokeTransaction,
 } from '../../utils/transaction'
-import { StarknetInvokeTransaction } from '../../types/transactions.types'
-
-import { isAccountDeployError, isAccountDeployResult, isEVMDecodeError, isPrepareCalldataError, isRPCError, isSignedRawTransaction, isStarknetContract, isStarknetRPCError } from '../../types/typeGuards'
+import { getAccountNonce } from '../../utils/starknet'
+import { writeLog } from '../../logger'
+import { padHashTo64 } from '../../utils/padding'
 
 export async function sendRawTransactionHandler(
   request: RPCRequest,
@@ -79,9 +58,11 @@ export async function sendRawTransactionHandler(
   const rawTxn: string = request.params[0]
   const tx = Transaction.from(rawTxn)
 
-  console.log(tx.toJSON())
-  const signedValidRawTransaction: SignedRawTransaction | ValidationError  = validateRawTransaction(tx)
-  // todo improve validations calcualte gas according to tx type https://docs.ethers.org/v5/api/utils/transactions/
+  const signedValidRawTransaction: SignedRawTransaction | ValidationError =
+    validateRawTransaction(tx)
+    writeLog(1, 'signed valid tx')
+    writeLog(1, JSON.stringify(signedValidRawTransaction,(k, v) => typeof v === 'bigint' ? v.toString() : v))
+  //console.log(signedValidRawTransaction)
   if (!isSignedRawTransaction(signedValidRawTransaction)) {
     return {
       jsonrpc: request.jsonrpc,
@@ -93,262 +74,134 @@ export async function sendRawTransactionHandler(
     }
   }
 
-
-  const deployedAccountAddress: RosettanetAccountResult = await getRosettaAccountAddress(signedValidRawTransaction.from)
+  const deployedAccountAddress: RosettanetAccountResult =
+    await getRosettaAccountAddress(signedValidRawTransaction.from)
   if (!deployedAccountAddress.isDeployed) {
-    // This means account is not registered on rosettanet registry. Lets deploy the address
-    const accountDeployResult: AccountDeployResult | AccountDeployError = await deployRosettanetAccount(signedValidRawTransaction)
-    if(!isAccountDeployResult(accountDeployResult)) {
-      return {
-        jsonrpc: request.jsonrpc,
-        id: request.id,
-        error: {
-          code: -32003,
-          message: 'Error at account deployment : ' + accountDeployResult.message,
-        },
-      }
-    }
-
-    // eslint-disable-next-line no-console
-    console.log(`Account Deployed ${accountDeployResult.contractAddress}`)
-
-    return <RPCResponse> {
-      jsonrpc: request.jsonrpc,
-      id: request.id,
-      result: accountDeployResult.transactionHash
-    }
+    writeLog(0, JSON.stringify(signedValidRawTransaction,(k, v) => typeof v === 'bigint' ? v.toString() : v))
+    return deployAndBroadcastTransaction(request, signedValidRawTransaction)
   }
 
-
-  const starknetAccountAddress = deployedAccountAddress.contractAddress;
-
-  let targetContractAddress: string | StarknetRPCError = await getSnAddressFromEthAddress(signedValidRawTransaction.to)
-  if(isStarknetRPCError(targetContractAddress)) {
-    if(targetContractAddress.code === -32700) {
-      // This means this contract address is not registered. So we fallback to precalculation
-      targetContractAddress = await precalculateStarknetAccountAddress(signedValidRawTransaction.to);
-      if(isStarknetRPCError(targetContractAddress)) {
-        return <RPCError> {
-          jsonrpc: request.jsonrpc,
-          id: request.id,
-          error : targetContractAddress
-        }
-      }
-    } else {
-      return <RPCError> {
-        jsonrpc: request.jsonrpc,
-        id: request.id,
-        error : targetContractAddress
-      }
-    }
-  }
-
-  const targetFunctionSelector: string | null = getFunctionSelectorFromCalldata(signedValidRawTransaction.data)
-  if(targetFunctionSelector === null) {
-
-    // Early exit. there is no function call only strk transfer
-    const rosettanetCalldata: Array<string> | PrepareCalldataError = prepareRosettanetCalldata(signedValidRawTransaction,[],[]);
-    
-    if(isPrepareCalldataError(rosettanetCalldata)) {
-      return <RPCError> {
-        jsonrpc: request.jsonrpc,
-        id: request.id,
-        error: {
-          code: -32708,
-          message: rosettanetCalldata.message,
-        }
-      }
-    }
-
-    const invokeTransaction: StarknetInvokeTransaction =
-    prepareStarknetInvokeTransaction(
-      starknetAccountAddress,
-      rosettanetCalldata,
-      signedValidRawTransaction.signature.arrayified,
-      signedValidRawTransaction
-    )
-    return await broadcastTransaction(request, invokeTransaction);
-  }
-
-    // This is Rosettanet feature transaction.
-    // It may be upgrade or multicall so directly broadcast tx
-  if(tx.from === tx.to) {
-    return broadcastInternalTransaction(request, starknetAccountAddress, signedValidRawTransaction, targetFunctionSelector);
-  }
-
-  const targetContract: StarknetContract | StarknetContractReadError = await getContractAbiAndMethods(targetContractAddress);
-
-  if(!isStarknetContract(targetContract)) {
-    return <RPCError> {
-      jsonrpc: request.jsonrpc,
-      id: request.id,
-      error: {
-        code: targetContract.code,
-        message: 'Error at reading starknet contract abi: ' + targetContract.message,
-      }
-    }
-  }
-
-  const contractTypeMapping: Map<string, ConvertableType> =
-    initializeStarknetAbi(targetContract.abi)
-
-  const starknetFunction: StarknetCallableMethod | undefined = findStarknetCallableMethod(targetFunctionSelector, targetContract.methods, contractTypeMapping);
-  if(typeof starknetFunction === 'undefined') {
-    return <RPCError> {
-      jsonrpc: request.jsonrpc,
-      id: request.id,
-      error: {
-        code: -32708,
-        message: 'Target function is not found in starknet contract.',
-      }
-    }
-  }
-
-  const starknetFunctionEthereumInputTypes: Array<CairoNamedConvertableType> =
-    getEthereumInputsCairoNamed(starknetFunction.snFunction, contractTypeMapping)
-
-  const ethCalldata = signedValidRawTransaction.data.slice(10)
-  const EVMCalldataDecode: EVMDecodeResult | EVMDecodeError = decodeEVMCalldata(
-    starknetFunctionEthereumInputTypes,
-    ethCalldata,
-    targetFunctionSelector
+  const starknetAccountAddress = deployedAccountAddress.contractAddress
+  // console.log(starknetAccountAddress)
+  const rosettanetCalldata = prepareRosettanetCalldata(
+    signedValidRawTransaction,
   )
 
-  if(isEVMDecodeError(EVMCalldataDecode)) {
-    return {
-      jsonrpc: request.jsonrpc,
-      id: request.id,
-      error: {
-        code: EVMCalldataDecode.code,
-        message: EVMCalldataDecode.message,
-      },
-    }
-  }
-
-  const { calldata, directives } = EVMCalldataDecode;
-
-  const rosettanetCalldata: Array<string> | PrepareCalldataError = prepareRosettanetCalldata(signedValidRawTransaction, calldata, directives, starknetFunction);
-  if(isPrepareCalldataError(rosettanetCalldata)) {
-    return <RPCError> {
+  if (isPrepareCalldataError(rosettanetCalldata)) {
+    return <RPCError>{
       jsonrpc: request.jsonrpc,
       id: request.id,
       error: {
         code: -32708,
         message: rosettanetCalldata.message,
-      }
+      },
     }
   }
-  const invokeTransaction: StarknetInvokeTransaction =
-    prepareStarknetInvokeTransaction(
-      starknetAccountAddress,
-      rosettanetCalldata,
-      signedValidRawTransaction.signature.arrayified,
-      signedValidRawTransaction
-    )
 
-  return broadcastTransaction(request, invokeTransaction)
+  const accountNonce = await getAccountNonce(starknetAccountAddress)
+
+  const invokeTx = prepareStarknetInvokeTransaction(
+    starknetAccountAddress,
+    rosettanetCalldata,
+    signedValidRawTransaction.signature.arrayified,
+    signedValidRawTransaction,
+    accountNonce,
+  )
+
+  writeLog(0, JSON.stringify(invokeTx,(k, v) => typeof v === 'bigint' ? v.toString() : v))
+
+  return await broadcastTransaction(request, invokeTx)
 }
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-async function broadcastTransaction(request: RPCRequest, params: any): Promise<RPCResponse | RPCError> {
-  const response : RPCResponse | StarknetRPCError = await callStarknet(<RPCRequest>{
+async function broadcastTransaction(
+  request: RPCRequest,
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  params: any,
+): Promise<RPCResponse | RPCError> {
+  const response: RPCResponse | StarknetRPCError = await callStarknet(<
+    RPCRequest
+  >{
     jsonrpc: request.jsonrpc,
     id: request.id,
     params: params,
-    method: 'starknet_addInvokeTransaction'
-  });
-  if(isStarknetRPCError(response)) {
-    if(response.code == 55) {
-      return <RPCError> {
+    method: 'starknet_addInvokeTransaction',
+  })
+  if (isStarknetRPCError(response)) {
+    writeLog(1, 'Starknet RPC returned error at broadcastTransaction: ' + JSON.stringify(response,(k, v) => typeof v === 'bigint' ? v.toString() : v))
+    if (response.code == 55) {
+      return <RPCError>{
         jsonrpc: request.jsonrpc,
         id: request.id,
         error: {
           message: 'Transaction rejected',
-          code: -32003
-        }
+          code: -32003,
+        },
       }
     }
-    return <RPCError> {
+    return <RPCError>{
       jsonrpc: request.jsonrpc,
       id: request.id,
       error: {
         message: response.message,
-        code: -32003
-      }
+        code: -32003,
+      },
     }
   }
 
-  const transactionHash = response.result.transaction_hash;
-  if(typeof transactionHash === 'string') {
-    return <RPCResponse> {
+  const transactionHash = response.result.transaction_hash
+  if (typeof transactionHash === 'string') {
+    return <RPCResponse>{
       jsonrpc: request.jsonrpc,
       id: request.id,
-      result: transactionHash
+      result: padHashTo64(transactionHash),
     }
   }
   return response
 }
 
-// Selector is checked target function
-async function broadcastInternalTransaction(request: RPCRequest, from: string,  tx: SignedRawTransaction, selector: string): Promise<RPCResponse | RPCError> {
+async function deployAndBroadcastTransaction(
+  request: RPCRequest,
+  txn: SignedRawTransaction,
+): Promise<RPCResponse | RPCError> {
+  const starknetNonce = '0x1'
+  writeLog(0,'will be deployed and executed')
 
-  if(selector === '0x76971d7f') {
-    // Multicall
-    const ethCalldata = tx.data.slice(10)
-    const decodedMulticallCalldata: EVMDecodeResult | EVMDecodeError = decodeMulticallCalldata(ethCalldata, selector) // datadan selector cikart selector ayri gonder
-    if(isEVMDecodeError(decodedMulticallCalldata)) {
-      return {
-        jsonrpc: request.jsonrpc,
-        id: request.id,
-        error: {
-          code: decodedMulticallCalldata.code,
-          message: decodedMulticallCalldata.message,
-        },
-      }
-    }
-    const rosettanetCalldata: Array<string> | PrepareCalldataError = prepareRosettanetCalldata(tx, decodedMulticallCalldata.calldata, decodedMulticallCalldata.directives);
-    console.log('ros calldata')
-    console.log(rosettanetCalldata)
-    if(isPrepareCalldataError(rosettanetCalldata)) {
-      return <RPCError> {
-        jsonrpc: request.jsonrpc,
-        id: request.id,
-        error: {
-          code: -32708,
-          message: rosettanetCalldata.message,
-        }
-      }
-    }
-    const invokeTx = prepareStarknetInvokeTransaction(from, rosettanetCalldata, tx.signature.arrayified, tx)
-    console.log(invokeTx)
-    const response = await broadcastTransaction(request, invokeTx);
-    console.log(response)
-    return response
-  } else if(selector === '0x74d0bb9d') {
-    // Upgrade
-    const rosettanetCalldata: Array<string> | PrepareCalldataError = prepareRosettanetCalldata(tx, ['0x74d0bb9d'],[]);
-    
-    if(isPrepareCalldataError(rosettanetCalldata)) {
-      return <RPCError> {
-        jsonrpc: request.jsonrpc,
-        id: request.id,
-        error: {
-          code: -32708,
-          message: rosettanetCalldata.message,
-        }
-      }
-    }
-    const invokeTx = prepareStarknetInvokeTransaction(from, rosettanetCalldata, tx.signature.arrayified, tx)
-
-    return broadcastTransaction(request, invokeTx);
-  } else {
-    return <RPCError> {
+  // This means account is not registered on rosettanet registry. Lets deploy the address
+  const accountDeployResult: AccountDeployResult | AccountDeployError =
+    await deployRosettanetAccount(txn)
+  if (!isAccountDeployResult(accountDeployResult)) {
+    writeLog(2, 'Error at account deployment : ' + accountDeployResult.message)
+    return {
       jsonrpc: request.jsonrpc,
       id: request.id,
       error: {
-        message: 'Feature function selector not found',
-        code: -32003
-      }
+        code: -32003,
+        message: 'Error at account deployment : ' + accountDeployResult.message,
+      },
     }
   }
+
+  const rosettanetCalldata = prepareRosettanetCalldata(txn)
+
+  if (isPrepareCalldataError(rosettanetCalldata)) {
+    return <RPCError>{
+      jsonrpc: request.jsonrpc,
+      id: request.id,
+      error: {
+        code: -32708,
+        message: rosettanetCalldata.message,
+      },
+    }
+  }
+
+  const invokeTx = prepareStarknetInvokeTransaction(
+    accountDeployResult.contractAddress,
+    rosettanetCalldata,
+    txn.signature.arrayified,
+    txn,
+    starknetNonce,
+  )
+  writeLog(0, 'invoke tx')
+  writeLog(0,JSON.stringify(invokeTx,(k, v) => typeof v === 'bigint' ? v.toString() : v))
+  return await broadcastTransaction(request, invokeTx)
 }

@@ -1,5 +1,5 @@
-import { Router, Response } from 'express'
-import { ParsedRequest, ResponseHandler, RPCError, RPCResponse } from '../types/types'
+import { Router, Response, Request } from 'express'
+import { ResponseHandler, RPCError, RPCResponse } from '../types/types'
 import { chainIdHandler } from './calls/chainId'
 import { maxPriorityFeePerGasHandler } from './calls/maxPriorityFeePerGas'
 import { gasPriceHandler } from './calls/gasPrice'
@@ -232,70 +232,143 @@ Methods.set('eth_sendRawTransaction', {
 
 Methods.set('eth_createAccessList', {
   method: 'eth_createAccessList',
-  handler: createAccessListHandler
+  handler: createAccessListHandler,
 })
 
-router.post('/', async function (req: ParsedRequest, res: Response) {
-  const request = req.rpcRequest
-  if (request?.method) {
-    const methodFirstLetters: string = request.method.substring(0, 7)
-    if (methodFirstLetters === 'starknet') {
-      const result = await starknetCallHandler(request)
-      res.send(result)
-      return
-    }
-  }
-  if (request?.method && request?.params && Methods.has(request.method)) {
-    const handler: ResponseHandler | undefined = Methods.get(request.method)
-    if (handler) {
-      try {
-        const result: RPCResponse | RPCError = await handler.handler(request)
-        if (isSnifferActive()) {
-          const logMsg = snifferOutput(request, result)
-          // TODO: improve error handling
-          // eslint-disable-next-line no-prototype-builtins
-          if (isRPCError(result)) {
-            writeLog(2, logMsg)
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+async function handleRequest(request: any): Promise<RPCResponse | RPCError> {
+  try {
+    if (request && typeof request === 'object') {
+      if ('method' in request && typeof request.method === 'string') {
+        const id = request.id ?? null
+        const params = request.params || []
+
+        const method = request.method
+        const parsedRequest = {
+          jsonrpc: '2.0',
+          id,
+          method,
+          params,
+        }
+        // if starknet call early exit.
+        if (method.length > 8 && method.substring(0, 8) === 'starknet') {
+          return await starknetCallHandler(parsedRequest)
+        }
+
+        if (Methods.has(method)) {
+          const handler = Methods.get(method)
+          if (handler) {
+            try {
+              const result: RPCResponse | RPCError =
+                await handler.handler(parsedRequest)
+              if (isSnifferActive()) {
+                const logMsg = snifferOutput(request, result)
+                if (isRPCError(result)) {
+                  writeLog(2, logMsg)
+                } else {
+                  writeLog(0, logMsg)
+                }
+              }
+              return result
+            } catch (ex) {
+              const errorMessage = ex instanceof Error ? ex.message : String(ex);
+              writeLog(2, JSON.stringify({request, error: errorMessage}))
+              return <RPCError>{
+                jsonrpc: '2.0',
+                id: id,
+                error: {
+                  code: -32500,
+                  message: 'Internal server error',
+                },
+              }
+            }
           } else {
-            writeLog(0, logMsg)
+            return <RPCError>{
+              jsonrpc: '2.0',
+              id: id,
+              error: {
+                code: -32601,
+                message: 'Method not found',
+              },
+            }
+          }
+        } else {
+          return <RPCError>{
+            jsonrpc: '2.0',
+            id: id,
+            error: {
+              code: -32601,
+              message: 'Method not found',
+            },
           }
         }
-        res.send(result)
-        return
-      } catch(ex) {
-        const errorMessage = `Error at method ${request.method}`
-        writeLog(2, JSON.stringify({
-          title: errorMessage,
-          message: typeof (ex as Error).message === 'string' ? (ex as Error).message : ex,
-          request: request
-        }))
-        res.send({
+      } else {
+        return <RPCError>{
           jsonrpc: '2.0',
-          id: req.body.id,
+          id: request.id ?? null,
           error: {
-            code: -32500,
-            message: 'Internal server error'
+            code: -32603,
+            message: 'method not presented',
           },
-        })
+        }
       }
-
+    } else {
+      return <RPCError>{
+        jsonrpc: '2.0',
+        id: request.id ?? null,
+        error: {
+          code: -32700,
+          message: 'parse error',
+        },
+      }
     }
-  } else {
-    const error: RPCError = {
-      id: req.body.id,
-      jsonrpc: req.body.jsonrpc,
+  } catch (ex) {
+    const errorMessage = `Error at method ${request.method}`
+    writeLog(
+      2,
+      JSON.stringify({
+        title: errorMessage,
+        message:
+          typeof (ex as Error).message === 'string'
+            ? (ex as Error).message
+            : ex,
+        request: request,
+      }),
+    )
+    return <RPCError>{
+      jsonrpc: '2.0',
+      id: request.id ?? null,
       error: {
-        code: -32601,
-        message: 'Method not found',
+        code: -32700,
+        message: 'parse error',
       },
     }
-    res.send({
-      jsonrpc: '2.0',
-      id: req.body.id,
-      error: error,
-    })
+  }
+}
+
+router.post('/', async function (req: Request, res: Response) {
+  // Handle batch requests
+  if (Array.isArray(req.body)) {
+    // Check for empty batch
+    // Return null in case empty array
+    if (req.body.length === 0) {
+      return res.status(200).send([])
+    }
+
+    const results: Array<RPCResponse | RPCError> = await Promise.all(
+      req.body.map(async request => {
+        return await handleRequest(request)
+      }),
+    )
+
+    const filteredResults = results.filter(result => result !== null)
+    res.send(filteredResults.length > 0 ? filteredResults : [])
     return
   }
+
+  const result: RPCResponse | RPCError = await handleRequest(req.body)
+  res.send(result)
+  return
 })
 
 export default router

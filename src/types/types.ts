@@ -88,7 +88,7 @@ export interface EVMDecodeError {
   message: string
 }
 
-export type EVMEncodeError = EVMDecodeError;
+export type EVMEncodeError = EVMDecodeError
 
 export interface EVMEncodeResult {
   data: string
@@ -135,7 +135,7 @@ export interface EstimateFeeTransaction {
   maxGasPricePerUnit: string
   nonce: string
   value: bigint
-  signature : string[]
+  signature: string[]
   calldata: string[]
   directives: number[]
   targetFunction: StarknetCallableMethod | undefined
@@ -165,7 +165,7 @@ export interface PrepareCalldataError {
 }
 
 export interface StarknetContract {
-  abi: Abi,
+  abi: Abi
   methods: Array<StarknetFunction>
 }
 
@@ -177,4 +177,17 @@ export interface StarknetContractReadError {
 export interface StarknetRPCError {
   code: number
   message: string
+}
+
+export interface RosettanetRawCalldata {
+  txType: string
+  to: string
+  nonce: string
+  maxPriorityFeePerGas: string
+  maxFeePerGas: string
+  gasPrice: string
+  gasLimit: string
+  value: string
+  selector: string
+  rawInput: string
 }

@@ -4,18 +4,28 @@ import { RpcProvider, constants, Abi, FunctionAbi } from 'starknet'
 import { snKeccak } from '../../src/utils/sn_keccak'
 import { validateSnAddress } from './validations'
 import { getRpc } from './getRpc'
-import { StarknetFunctionInput, StarknetFunction, RPCError, StarknetContract, StarknetContractReadError } from '../types/types'
+import {
+  StarknetFunctionInput,
+  StarknetFunction,
+  RPCError,
+  StarknetContract,
+  StarknetContractReadError,
+  StarknetRPCError,
+} from '../types/types'
 import { ConvertableType } from './converters/abiFormatter'
+import { writeLog } from '../logger'
 
 export interface CairoNamedConvertableType extends ConvertableType {
   cairoType: string
 }
 
-export async function getContractAbiAndMethods(snAddress: string): Promise<StarknetContract | StarknetContractReadError> {
-  if(!validateSnAddress(snAddress)) {
-    return <StarknetContractReadError> {
+export async function getContractAbiAndMethods(
+  snAddress: string,
+): Promise<StarknetContract | StarknetContractReadError> {
+  if (!validateSnAddress(snAddress)) {
+    return <StarknetContractReadError>{
       code: -32700,
-      message: 'Contract address can not be validated.'
+      message: 'Contract address can not be validated.',
     }
   }
   const rpcUrl: string = getRpc()
@@ -26,9 +36,9 @@ export async function getContractAbiAndMethods(snAddress: string): Promise<Stark
     const compressedContract = await provider.getClassAt(snAddress)
     contractAbi = compressedContract.abi
   } catch (e) {
-    return <StarknetContractReadError> {
+    return <StarknetContractReadError>{
       code: -32701,
-      message: 'Error at starknet RPC getClassAt method call'
+      message: 'Error at starknet RPC getClassAt method call',
     }
   }
 
@@ -49,9 +59,9 @@ export async function getContractAbiAndMethods(snAddress: string): Promise<Stark
     ...directFunctions,
   ]
 
-  return <StarknetContract> {
+  return <StarknetContract>{
     abi: contractAbi,
-    methods: allEntrypoints
+    methods: allEntrypoints,
   }
 }
 
@@ -94,7 +104,7 @@ export async function getContractsMethods(
 
 export function getEthereumOutputsCairoNamed(
   snFunction: StarknetFunction,
-  map: Map<string, ConvertableType>
+  map: Map<string, ConvertableType>,
 ): Array<CairoNamedConvertableType> {
   if (!snFunction.outputs || snFunction.outputs.length == 0) {
     return []
@@ -172,8 +182,11 @@ export function generateEthereumFunctionSignatureFromTypeMapping(
   if (!snFunction.inputs || snFunction.inputs.length == 0) {
     return `${snFunction.name}()`
   }
-  const inputTypes: string | undefined = getFunctionInputTypesFromMap(map, snFunction.inputs)
-  if(typeof inputTypes === 'undefined') {
+  const inputTypes: string | undefined = getFunctionInputTypesFromMap(
+    map,
+    snFunction.inputs,
+  )
+  if (typeof inputTypes === 'undefined') {
     return
   }
   return `${snFunction.name}(${inputTypes})`
@@ -187,12 +200,11 @@ function getFunctionInputTypesFromMap(
     if (map.has(input.type)) {
       return map.get(input.type)?.solidityType
     } else {
-      return 
+      return
     }
   })
   return inputTypes.toString()
 }
-
 
 // Returns contract abi
 export async function getContractsAbi(snAddress: string): Promise<Abi> {
@@ -206,4 +218,16 @@ export async function getContractsAbi(snAddress: string): Promise<Abi> {
     return []
   }
   return contractAbi
+}
+
+export async function getAccountNonce(snAddress: string): Promise<string> {
+  const rpcUrl: string = getRpc()
+  const provider = new RpcProvider({ nodeUrl: rpcUrl })
+  try {
+    const nonce = await provider.getNonceForAddress(snAddress)
+    return nonce
+  } catch (ex) {
+    writeLog(0, `Error at getAccountNonce: ${ex}. Falling back nonce as zero.`)
+    return '0x0'
+  }
 }
