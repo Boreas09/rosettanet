@@ -61,6 +61,26 @@ export function to128Bits(calldata: string): string[] {
   return slots
 }
 
+// Returns calldata in a serialized string format
+export function to256Bits(calldata: string[]): string {
+  if(calldata.length == 0) {
+    return '0x'
+  }
+  if(calldata.length == 1) {
+    return calldata[0]; // returns only selector
+  }
+
+  const selector = calldata[0];
+  let str = `${selector}`
+  for (let i = 1; i < calldata.length; i++) {
+    const data = safeU256ToUint256([calldata[i], calldata[i+1]]);
+    str = str + data.replace('0x', '')
+    i +=2;
+  }
+
+  return str;
+}
+
 export function convertUint256s(data: Array<string>): Array<string> {
   const split256Bits: Array<string> = []
 
@@ -109,6 +129,12 @@ export function mergeSlots(
   let typeIndex = 0
   for (let i = 0; i < data.length; i++) {
     const currentType = types[typeIndex]
+
+    if(currentType.solidityType === 'uint256' && currentType.cairoType === 'core::felt252') {
+      encodedValues.push(data[i])
+      typeIndex++
+      continue
+    }
 
     if (currentType.solidityType === 'uint256') {
       const mergedUint256 = safeU256ToUint256([data[i], data[i + 1]])
@@ -161,12 +187,9 @@ export function encodeStarknetData(
         data: '0x', // 0x or empty??
       }
     }
-
     const encoder = new AbiCoder()
     const solidityTypes = types.map(x => x.solidityType)
-
     const mergedCalldata = mergeSlots(types, data)
-
     const encodedResult = encoder.encode(solidityTypes, mergedCalldata)
 
     return <EVMEncodeResult>{

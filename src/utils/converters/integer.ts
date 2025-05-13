@@ -37,6 +37,20 @@ export function safeU256ToUint256(value: Array<string>): string {
   return result
 }
 
+export function U256ToUint256HexString(value: Array<string>): string {
+  if(value.length == 0) {
+    return '0x0000000000000000000000000000000000000000000000000000000000000000'
+  }
+  if(value.length == 1) {
+    return addHexPadding(value[0], 64, true)
+  }
+
+  const low = addHexPadding(value[0], 32, false)
+  const high = addHexPadding(value[1], 32, true)
+
+  return `${high}${low}`
+}
+
 export function U256toUint256(value: Array<string>): string {
   const low = BigInt(value[0])
   const high = BigInt(value[1])
@@ -67,3 +81,24 @@ export function hexToDecimal(hexString: string) {
 
 
 // TODO: support signed integers
+/**
+ * Adds two hexadecimal strings and returns the result as a hex string
+ * @param hex1 First hex string (with or without '0x' prefix)
+ * @param hex2 Second hex string (with or without '0x' prefix)
+ * @returns Sum as a hex string with '0x' prefix
+ */
+export function sumHexStrings(hex1: string, hex2: string): string {
+  // Remove '0x' prefix if present
+  const cleanHex1 = hex1.startsWith('0x') ? hex1.slice(2) : hex1;
+  const cleanHex2 = hex2.startsWith('0x') ? hex2.slice(2) : hex2;
+  
+  // Convert hex strings to BigInt (for handling large numbers)
+  const num1 = BigInt('0x' + cleanHex1);
+  const num2 = BigInt('0x' + cleanHex2);
+  
+  // Add the numbers
+  const sum = num1 + num2;
+  
+  // Convert back to hex string with '0x' prefix
+  return '0x' + sum.toString(16);
+}
