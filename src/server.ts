@@ -13,7 +13,7 @@ export function StartListening() {
 
   app.use(cors())
   app.options('*', cors())
-  
+
   app.use((req, res, next) => {
     if (req.method !== 'POST') {
       return res.status(405).json({
@@ -120,7 +120,7 @@ export function StartListening() {
   // Handle HTTP method validation - only allow POST for JSON-RPC
   app.use('/', Routes)
 
-  const server = app.listen(port, host, (): void => {
+  const server = app.listen(3000, (): void => {
     // eslint-disable-next-line no-console
     writeLog(0, `Server started at ${host}:${port}`)
   })
