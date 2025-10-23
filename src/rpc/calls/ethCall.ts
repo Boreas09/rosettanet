@@ -1,9 +1,7 @@
-/* eslint-disable @typescript-eslint/no-unused-vars */
 import { writeLog } from '../../logger'
 import {
   isEVMDecodeError,
   isEVMEncodeResult,
-  isRPCError,
   isStarknetContract,
   isStarknetRPCError,
 } from '../../types/typeGuards'
@@ -18,24 +16,28 @@ import {
   StarknetContract,
   StarknetContractReadError,
   StarknetRPCError,
+  EthCallParameters,
+  StarknetCallableMethod,
+  ConvertableType,
+  CairoNamedConvertableType,
 } from '../../types/types'
 import { callStarknet } from '../../utils/callHelper'
 import {
   decodeEVMCalldataWithAddressConversion,
   encodeStarknetData,
   getFunctionSelectorFromCalldata,
+  requiresTokenMetadataException,
+  handleTokenMetadataException,
 } from '../../utils/calldata'
 import {
-  ConvertableType,
+
   initializeStarknetAbi,
 } from '../../utils/converters/abiFormatter'
 import {
-  findStarknetCallableMethod,
-  StarknetCallableMethod,
+  findStarknetCallableMethod
 } from '../../utils/match'
 import { snKeccak } from '../../utils/sn_keccak'
 import {
-  CairoNamedConvertableType,
   getContractAbiAndMethods,
   getEthereumInputsCairoNamed,
   getEthereumOutputsCairoNamed,
@@ -43,15 +45,7 @@ import {
 import { validateEthAddress } from '../../utils/validations'
 import { getSnAddressFromEthAddress } from '../../utils/wrapper'
 
-export interface EthCallParameters {
-  from?: string
-  to: string
-  gas?: string | number | bigint
-  gasPrice?: string | number | bigint
-  value?: string | number | bigint
-  data?: string
-  input?: string
-}
+
 
 export function isEthCallParameters(
   value: unknown,
@@ -127,6 +121,8 @@ export async function ethCallHandler(
       result: '0x',
     }
   }
+
+
   // ETH CALL BAZEN from field bos geliyor.
   // to ise registered degilse result 0x donmeli
   const targetContractAddress: string | StarknetRPCError =
@@ -210,6 +206,34 @@ export async function ethCallHandler(
     'pending', // update to latest
   ]
 
+  // Check if this is a token metadata function that requires special handling
+  if (requiresTokenMetadataException(targetFunctionSelector)) {
+    const snResponse: RPCResponse | StarknetRPCError = await callStarknet({
+      jsonrpc: request.jsonrpc,
+      method: 'starknet_call',
+      params: starknetCallParams,
+      id: request.id,
+    })
+
+    if (isStarknetRPCError(snResponse)) {
+      return <RPCError>{
+        jsonrpc: request.jsonrpc,
+        id: request.id,
+        error: snResponse,
+      }
+    }
+
+    const exceptionResult = handleTokenMetadataException(
+      snResponse.result
+    )
+
+    return {
+      jsonrpc: request.jsonrpc,
+      id: request.id,
+      result: exceptionResult,
+    }
+  }
+
   const snResponse: RPCResponse | StarknetRPCError = await callStarknet({
     jsonrpc: request.jsonrpc,
     method: 'starknet_call',
@@ -224,7 +248,7 @@ export async function ethCallHandler(
       error: snResponse,
     }
   }
-  
+
   const starknetFunctionEthereumOutputTypes: Array<CairoNamedConvertableType> =
     getEthereumOutputsCairoNamed(
       starknetFunction.snFunction,

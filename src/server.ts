@@ -38,7 +38,7 @@ export function StartListening() {
         try {
           req.body = JSON.parse(data)
           next()
-        } catch (e) {
+        } catch {
           return res.status(400).json({
             jsonrpc: '2.0',
             id: null,
@@ -65,7 +65,7 @@ export function StartListening() {
         try {
           req.body = JSON.parse(data)
           next()
-        } catch (e) {
+        } catch {
           return res.status(400).json({
             jsonrpc: '2.0',
             id: null,
@@ -90,7 +90,7 @@ export function StartListening() {
       verify: (req, res, buf) => {
         try {
           JSON.parse(buf.toString())
-        } catch (e) {
+        } catch {
           throw new Error('Invalid JSON')
         }
       },
@@ -121,7 +121,6 @@ export function StartListening() {
   app.use('/', Routes)
 
   const server = app.listen(3000, (): void => {
-    // eslint-disable-next-line no-console
     writeLog(0, `Server started at ${host}:${port}`)
   })
 

@@ -1,4 +1,4 @@
-/* eslint-disable @typescript-eslint/no-explicit-any */
+/* eslint-disable  @typescript-eslint/no-explicit-any */
 import { AbiCoder, dataSlice, getBytes, hexlify } from 'ethers'
 import {
   EVMDecodeError,
@@ -6,6 +6,7 @@ import {
   EVMEncodeError,
   EVMEncodeResult,
   StarknetRPCError,
+  CairoNamedConvertableType
 } from '../types/types'
 import {
   BnToU256,
@@ -13,13 +14,10 @@ import {
   Uint256ToU256,
 } from './converters/integer'
 import { getSnAddressWithFallback } from './wrapper'
-import { CairoNamedConvertableType } from './starknet'
-import { addHexPrefix, removeHexZeroes } from './padding'
+import { addHexPrefix, removeHexPrefix } from './padding'
 import { isStarknetRPCError } from '../types/typeGuards'
-import { convertStringIntoChunks } from './felt'
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-export function getFunctionSelectorFromCalldata(calldata: any): string | null {
+export function getFunctionSelectorFromCalldata(calldata: string | null): string | null {
   if (typeof calldata !== 'string') {
     return null
   }
@@ -29,6 +27,85 @@ export function getFunctionSelectorFromCalldata(calldata: any): string | null {
   }
 
   return calldata.substring(0, 10)
+}
+
+/**
+ * Checks if the function selector is one that requires special exception handling
+ * 0x06fdde03 - name() function
+ * 0x95d89b41 - symbol() function
+ * @param selector The function selector to check
+ * @returns true if the selector requires exception handling
+ */
+export function requiresTokenMetadataException(selector: string | null): boolean {
+  if (selector === null) {
+    return false
+  }
+
+  const NAME_SELECTOR = '0x06fdde03'
+  const SYMBOL_SELECTOR = '0x95d89b41'
+
+  return selector === NAME_SELECTOR || selector === SYMBOL_SELECTOR
+}
+
+/**
+ * Converts hex string to ASCII string
+ * @param hex Hex string to convert (with or without 0x prefix)
+ * @returns ASCII string
+ */
+function hexToAscii(hex: string): string {
+  const cleanHex = removeHexPrefix(hex)
+  let str = ''
+  for (let i = 0; i < cleanHex.length; i += 2) {
+    str += String.fromCharCode(parseInt(cleanHex.substr(i, 2), 16))
+  }
+  return str
+}
+
+/**
+ * Handles special exception for token metadata functions (name and symbol)
+ * Converts Starknet result format to Ethereum-compatible string format
+ *
+ * Supports two formats:
+ * 1. Single element array: ["0x4574686572"] - Direct hex encoded string
+ * 2. Three element array: ["0x0", "0x537461726b6e65742074425443", "0xd"] - Felt252 encoded string with length
+ *
+ * @param snResult Incoming result from starknet RPC for name or symbol request.
+ * @returns Ethereum-compatible ABI encoded string
+ */
+export function handleTokenMetadataException(snResult: string[]): string {
+  if (snResult.length === 1) {
+    // Format 1: Single hex string
+    // Remove 0x and convert hex to ASCII
+    const asciiValue = hexToAscii(snResult[0])
+
+    // Encode as Ethereum string format using AbiCoder
+    const encoder = new AbiCoder()
+    return encoder.encode(['string'], [asciiValue])
+  } else if (snResult.length === 3) {
+    // Format 2: Three element array [padding, hex_data, length]
+    // The second element contains the hex data
+    // The third element is the expected string length
+    const hexData = snResult[1]
+    const expectedLength = parseInt(removeHexPrefix(snResult[2]), 16)
+
+    // Convert hex to ASCII
+    const asciiValue = hexToAscii(hexData)
+
+    // Verify length matches expected length
+    if (asciiValue.length !== expectedLength) {
+      throw new Error(
+        `String length mismatch: expected ${expectedLength}, got ${asciiValue.length}`
+      )
+    }
+
+    // Encode as Ethereum string format using AbiCoder
+    const encoder = new AbiCoder()
+    return encoder.encode(['string'], [asciiValue])
+  } else {
+    throw new Error(
+      `Invalid snResult format for token metadata. Expected 1 or 3 elements, got ${snResult.length}`
+    )
+  }
 }
 
 export function to128Bits(calldata: string): string[] {
@@ -61,26 +138,6 @@ export function to128Bits(calldata: string): string[] {
   return slots
 }
 
-// Returns calldata in a serialized string format
-export function to256Bits(calldata: string[]): string {
-  if(calldata.length == 0) {
-    return '0x'
-  }
-  if(calldata.length == 1) {
-    return calldata[0]; // returns only selector
-  }
-
-  const selector = calldata[0];
-  let str = `${selector}`
-  for (let i = 1; i < calldata.length; i++) {
-    const data = safeU256ToUint256([calldata[i], calldata[i+1]]);
-    str = str + data.replace('0x', '')
-    i +=2;
-  }
-
-  return str;
-}
-
 export function convertUint256s(data: Array<string>): Array<string> {
   const split256Bits: Array<string> = []
 
@@ -96,7 +153,6 @@ export function convertUint256s(data: Array<string>): Array<string> {
 }
 
 // Tuples also returned like array
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function decodeCalldataWithTypes(
   types: Array<string>,
   data: string,
@@ -130,7 +186,7 @@ export function mergeSlots(
   for (let i = 0; i < data.length; i++) {
     const currentType = types[typeIndex]
 
-    if(currentType.solidityType === 'uint256' && currentType.cairoType === 'core::felt252') {
+    if (currentType.solidityType === 'uint256' && currentType.cairoType === 'core::felt252') {
       encodedValues.push(data[i])
       typeIndex++
       continue
@@ -276,48 +332,6 @@ export async function decodeEVMCalldataWithAddressConversion(
   }
 }
 
-export function decodeMulticallCalldata(
-  data: string,
-  selector: string,
-): EVMDecodeResult | EVMDecodeError {
-  try {
-    const chunks = convertStringIntoChunks(data, 64)
-    const calls = []
-    const callCount = Number(chunks[0])
-    calls.push(selector)
-    calls.push(removeHexZeroes(callCount.toString(16)))
-    let readIndex = 1
-
-    for (let i = 0; i < callCount; i++) {
-      const to = chunks[readIndex]
-
-      calls.push(removeHexZeroes(to))
-      readIndex++
-      const entrypoint = chunks[readIndex]
-      calls.push(removeHexZeroes(entrypoint))
-      readIndex++
-      const innerCalldataLength = Number(chunks[readIndex])
-      calls.push(removeHexZeroes(innerCalldataLength.toString(16)))
-      readIndex++
-      const innerCalldata = []
-      for (let j = 0; j < innerCalldataLength; j++) {
-        innerCalldata.push(chunks[readIndex])
-        calls.push(removeHexZeroes(chunks[readIndex]))
-        readIndex++
-      }
-    }
-    return <EVMDecodeResult>{
-      directives: [0, 0],
-      calldata: calls,
-    }
-  } catch (ex) {
-    return <EVMDecodeError>{
-      code: -1,
-      message: (ex as Error).message,
-    }
-  }
-}
-
 // data: Selector removed calldata
 export function decodeMulticallFeatureCalldata(
   data: string,
@@ -372,68 +386,6 @@ export function decodeMulticallFeatureCalldata(
         addHexPrefix(BigInt(innerCalldata.length).toString(16)),
       )
       decodedValues.push(...innerCalldata)
-    }
-
-    return <EVMDecodeResult>{
-      directives,
-      calldata: decodedValues,
-    }
-  } catch (ex) {
-    return <EVMDecodeError>{
-      code: -1,
-      message: (ex as Error).message,
-    }
-  }
-}
-
-export function decodeEVMCalldata(
-  types: Array<CairoNamedConvertableType>,
-  data: string,
-  selector: string,
-): EVMDecodeResult | EVMDecodeError {
-  try {
-    if (types.length == 0 || data.length == 0) {
-      return <EVMDecodeError>{
-        code: -32700,
-        message: 'Types or data length is wrong on EVM calldata decoding',
-      }
-    }
-
-    if (selector.length != 10) {
-      return <EVMDecodeError>{
-        code: -32700,
-        message: 'Selector length must be 10 on EVM calldata decoding',
-      }
-    }
-
-    const decoder = new AbiCoder()
-    const solidityTypes = types.map(x => x.solidityType)
-    const result = decoder
-      .decode(solidityTypes, dataSlice('0x' + data, 0))
-      .toArray()
-
-    const decodedValues: Array<string> = []
-    const directives: Array<number> = []
-    decodedValues.push(selector)
-
-    if (result.length != types.length) {
-      return <EVMDecodeError>{
-        code: -32700,
-        message: 'Decode result and length mismatch on EVM calldata decoding.',
-      }
-    }
-
-    for (let i = 0; i < result.length; i++) {
-      const currentType = types[i]
-      const currentData = result[i]
-
-      if (currentType.solidityType === 'uint256') {
-        decodedValues.push(...BnToU256(currentData))
-        directives.push(1, 0)
-        continue
-      }
-      decodedValues.push(addHexPrefix(currentData))
-      directives.push(currentType.solidityType === 'address' ? 2 : 0)
     }
 
     return <EVMDecodeResult>{
